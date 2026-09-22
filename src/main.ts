@@ -8,7 +8,7 @@ async function bootstrap() {
   app.useWebSocketAdapter(new IoAdapter(app));
   app.enableCors({
     origin: [
-      'https://vercel.app', // Your production Vercel URL
+      'https://uml-modeling-frontend.vercel.app', // Your production Vercel URL
       'http://localhost:3000'                    // Your local Next.js development URL
     ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
