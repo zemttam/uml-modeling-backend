@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import JSZip from 'jszip';
+import * as JSZip from 'jszip';
 import OpenAI from 'openai';
 import { scrubJsonResponse } from '../diagrams/diagram-from-ai';
 import { DiagramDocument } from '../diagrams/diagram.types';
