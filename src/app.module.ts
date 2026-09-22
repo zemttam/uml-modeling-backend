@@ -27,6 +27,9 @@ import { SpringExportModule } from './spring-export/spring-export.module';
         password: config.get<string>('DB_PASSWORD', ''),
         database: config.get<string>('DB_NAME', 'uml'),
         entities: [UserEntity, ProjectEntity],
+        ssl: {
+    rejectUnauthorized: true, // Set to true in production with a valid CA certificate
+  },
         synchronize: true,
       }),
     }),
