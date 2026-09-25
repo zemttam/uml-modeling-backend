@@ -7,14 +7,10 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.useWebSocketAdapter(new IoAdapter(app));
   app.enableCors({
-    origin: [
-      'https://uml-modeling-frontend.vercel.app', // Your production Vercel URL
-      'http://localhost:3000'                    // Your local Next.js development URL
-    ],
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true, // Allow cookies or authorization headers if needed
+    origin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000',
+    credentials: true,
   });
   app.use(cookieParser());
-  await app.listen(process.env.PORT ?? 3000);
+  await app.listen(process.env.PORT ?? 3030);
 }
 bootstrap();
