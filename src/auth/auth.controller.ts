@@ -29,12 +29,8 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const user = await this.authService.signup(body.username, body.password);
-    const token = this.authService.signToken({
-      id: user.id,
-      username: user.username,
-    });
-    this.setSessionCookie(res, token);
-    return { username: user.username, token };
+    this.setSessionCookie(res, { id: user.id, username: user.username });
+    return { username: user.username };
   }
 
   @Post('login')
@@ -44,15 +40,10 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const user = await this.authService.login(body.username, body.password);
-    const token = this.authService.signToken({
-      id: user.id,
-      username: user.username,
-    });
-    this.setSessionCookie(res, token);
+    this.setSessionCookie(res, { id: user.id, username: user.username });
     return {
       username: user.username,
       lastOpenedProjectId: user.lastOpenedProjectId ?? null,
-      token,
     };
   }
 
@@ -61,11 +52,10 @@ export class AuthController {
   @Post('logout')
   @HttpCode(200)
   logout(@Res({ passthrough: true }) res: Response) {
-    const isProd = process.env.NODE_ENV === 'production';
     res.cookie(SESSION_COOKIE_NAME, '', {
       httpOnly: true,
-      sameSite: isProd ? 'none' : 'lax',
-      secure: isProd,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
       maxAge: 0,
     });
     return { ok: true };
@@ -82,14 +72,15 @@ export class AuthController {
     };
   }
 
-  private setSessionCookie(res: Response, token: string) {
-    const isProd = process.env.NODE_ENV === 'production';
+  private setSessionCookie(
+    res: Response,
+    user: { id: string; username: string },
+  ) {
+    const token = this.authService.signToken(user);
     res.cookie(SESSION_COOKIE_NAME, token, {
       httpOnly: true,
-      // Cross-site requests (frontend on Vercel, API on Render) only carry
-      // the cookie in strict browsers (e.g. Firefox) with SameSite=None.
-      sameSite: isProd ? 'none' : 'lax',
-      secure: isProd,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
     });
   }
 }
