@@ -53,9 +53,9 @@ export class AuthController {
   @HttpCode(200)
   logout(@Res({ passthrough: true }) res: Response) {
     res.cookie(SESSION_COOKIE_NAME, '', {
-      httpOnly: true,
+      httpOnly: false,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: true,
       maxAge: 0,
     });
     return { ok: true };
@@ -78,9 +78,9 @@ export class AuthController {
   ) {
     const token = this.authService.signToken(user);
     res.cookie(SESSION_COOKIE_NAME, token, {
-      httpOnly: true,
+      httpOnly: false,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: true,
     });
   }
 }
