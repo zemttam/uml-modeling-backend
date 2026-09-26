@@ -30,7 +30,7 @@ import { SpringExportModule } from './spring-export/spring-export.module';
         synchronize: true,
         ssl: {
           rejectUnauthorized: true, // Set to true in production with a valid CA certificate
-        },
+       },
       }),
     }),
     UsersModule,
