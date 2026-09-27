@@ -5,10 +5,9 @@ import {
   HttpCode,
   Post,
   Req,
-  Res,
   UseGuards,
 } from '@nestjs/common';
-import { Request, Response } from 'express';
+import { Request } from 'express';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -16,7 +15,7 @@ declare module 'express-serve-static-core' {
   }
 }
 import { AuthService } from './auth.service';
-import { JwtAuthGuard, SESSION_COOKIE_NAME } from './jwt-auth.guard';
+import { JwtAuthGuard } from './jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -24,41 +23,28 @@ export class AuthController {
 
   @Post('signup')
   @HttpCode(200)
-  async signup(
-    @Body() body: { username?: string; password?: string },
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async signup(@Body() body: { username?: string; password?: string }) {
     const user = await this.authService.signup(body.username, body.password);
-    this.setSessionCookie(res, { id: user.id, username: user.username });
-    return { username: user.username };
+    const token = this.authService.signToken({
+      id: user.id,
+      username: user.username,
+    });
+    return { username: user.username, token };
   }
 
   @Post('login')
   @HttpCode(200)
-  async login(
-    @Body() body: { username?: string; password?: string },
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async login(@Body() body: { username?: string; password?: string }) {
     const user = await this.authService.login(body.username, body.password);
-    this.setSessionCookie(res, { id: user.id, username: user.username });
+    const token = this.authService.signToken({
+      id: user.id,
+      username: user.username,
+    });
     return {
       username: user.username,
       lastOpenedProjectId: user.lastOpenedProjectId ?? null,
+      token,
     };
-  }
-
-  // Not guarded: logout must succeed (and clear the cookie) even when the
-  // session is already stale or missing, so the client always lands cleanly.
-  @Post('logout')
-  @HttpCode(200)
-  logout(@Res({ passthrough: true }) res: Response) {
-    res.cookie(SESSION_COOKIE_NAME, '', {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 0,
-    });
-    return { ok: true };
   }
 
   @Get('me')
@@ -70,17 +56,5 @@ export class AuthController {
       username: payload.username,
       lastOpenedProjectId: user?.lastOpenedProjectId ?? null,
     };
-  }
-
-  private setSessionCookie(
-    res: Response,
-    user: { id: string; username: string },
-  ) {
-    const token = this.authService.signToken(user);
-    res.cookie(SESSION_COOKIE_NAME, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-    });
   }
 }

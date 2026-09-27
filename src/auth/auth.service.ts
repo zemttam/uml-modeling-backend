@@ -47,7 +47,10 @@ export class AuthService {
   }
 
   signToken(user: { id: string; username: string }): string {
-    return this.jwtService.sign({ sub: user.id, username: user.username });
+    return this.jwtService.sign(
+      { sub: user.id, username: user.username },
+      { expiresIn: '7d' },
+    );
   }
 
   verifyToken(token: string): { sub: string; username: string } {

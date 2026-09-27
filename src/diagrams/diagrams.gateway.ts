@@ -13,7 +13,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Server, Socket } from 'socket.io';
 import { ProjectEntity } from '../projects/project.entity';
-import { SESSION_COOKIE_NAME } from '../auth/jwt-auth.guard';
 import {
   DIAGRAM_EVENT,
   DiagramDocument,
@@ -26,22 +25,6 @@ const AUTOSAVE_DEBOUNCE_MS = 1000;
 
 function roomFor(projectId: string): string {
   return `project:${projectId}`;
-}
-
-function readCookie(
-  cookieHeader: string | undefined,
-  name: string,
-): string | undefined {
-  if (!cookieHeader) {
-    return undefined;
-  }
-  for (const part of cookieHeader.split(';')) {
-    const [k, ...v] = part.trim().split('=');
-    if (k === name) {
-      return v.length ? decodeURIComponent(v.join('=')) : undefined;
-    }
-  }
-  return undefined;
 }
 
 @WebSocketGateway({
@@ -70,15 +53,12 @@ export class DiagramGateway
   @WebSocketServer()
   server: Server;
 
-  // --- connection lifecycle: handshake JWT-cookie auth (reuses token guard) ---
+  // --- connection lifecycle: handshake Bearer-token auth (reuses JWT verify) ---
 
   async handleConnection(client: Socket): Promise<void> {
-    const token = readCookie(
-      client.handshake.headers.cookie,
-      SESSION_COOKIE_NAME,
-    );
+    const token = client.handshake.auth?.token as string | undefined;
     if (!token) {
-      this.logger.warn(`rejecting socket ${client.id}: no session cookie`);
+      this.logger.warn(`rejecting socket ${client.id}: no auth token`);
       client.disconnect(true);
       return;
     }

@@ -6,15 +6,17 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
-export const SESSION_COOKIE_NAME = 'token';
-
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(private readonly jwtService: JwtService) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
-    const token = request.cookies?.[SESSION_COOKIE_NAME];
+    const header: string | undefined = request.headers?.authorization;
+    const token =
+      typeof header === 'string' && header.startsWith('Bearer ')
+        ? header.slice('Bearer '.length).trim()
+        : undefined;
     if (!token) {
       throw new UnauthorizedException('incorrect credentials');
     }
