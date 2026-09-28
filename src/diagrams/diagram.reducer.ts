@@ -34,12 +34,40 @@ export function applyOp(doc: DiagramDocument, op: DiagramOp): void {
     }
     case 'delete': {
       const id = op.id;
-      // Remove the element with this id (if any) and cascade-delete any
-      // relationship that references it as source or target. If the id
-      // belongs to a relationship, that relationship is removed directly.
-      doc.elements = doc.elements.filter((e) => e.id !== id);
+      // Association-class delete closure, iterated to a fixed point:
+      // 1. removing a relationship also removes its tied association class;
+      // 2. removing an element also removes every relationship tied to it
+      //    as an association class;
+      // 3. removing an element also removes relationships referencing it as
+      //    source/target (existing rule), and each such relationship takes
+      //    its tied association class with it.
+      const removedElements = new Set<string>([id]);
+      const removedRelationships = new Set<string>();
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const rel of doc.relationships) {
+          if (removedRelationships.has(rel.id)) {
+            continue;
+          }
+          const endpointGone =
+            removedElements.has(rel.sourceId) ||
+            removedElements.has(rel.targetId);
+          const tiedClassGone =
+            !!rel.associationClassId &&
+            removedElements.has(rel.associationClassId);
+          if (rel.id === id || endpointGone || tiedClassGone) {
+            removedRelationships.add(rel.id);
+            if (rel.associationClassId) {
+              removedElements.add(rel.associationClassId);
+            }
+            changed = true;
+          }
+        }
+      }
+      doc.elements = doc.elements.filter((e) => !removedElements.has(e.id));
       doc.relationships = doc.relationships.filter(
-        (r) => r.id !== id && r.sourceId !== id && r.targetId !== id,
+        (r) => !removedRelationships.has(r.id),
       );
       break;
     }

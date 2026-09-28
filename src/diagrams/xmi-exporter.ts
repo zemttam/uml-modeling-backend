@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  ClassElement,
   DiagramDocument,
   RelationshipElement,
   RelationshipKind,
@@ -13,9 +14,22 @@ function esc(value: string): string {
     .replace(/"/g, '&' + 'quot;');
 }
 
+// A multiplicity bound, classified so the emitter can pick the EA value
+// convention: `*` becomes an unlimited natural (-1), anything else is
+// written as a finite literal integer.
+type MultBound = { kind: 'unlimited' } | { kind: 'integer'; value: string };
+
 interface MultBounds {
-  lower: string;
-  upper: string;
+  lower: MultBound;
+  upper: MultBound;
+}
+
+function parseBound(token: string): MultBound {
+  const t = token.trim();
+  if (t === '*') {
+    return { kind: 'unlimited' };
+  }
+  return { kind: 'integer', value: t };
 }
 
 function parseMultiplicity(value: string | undefined): MultBounds | null {
@@ -24,18 +38,18 @@ function parseMultiplicity(value: string | undefined): MultBounds | null {
   }
   const v = value.trim();
   if (v === '*') {
-    // A bare `*` has no lower bound; omit lowerValue so it round-trips
-    // through the importer distinctly from `0..*`.
-    return { lower: '', upper: '*' };
+    // EA writes a bare `*` as both bounds unlimited (-1 / -1).
+    return { lower: { kind: 'unlimited' }, upper: { kind: 'unlimited' } };
   }
   const dot = v.indexOf('..');
   if (dot >= 0) {
     return {
-      lower: v.slice(0, dot).trim(),
-      upper: v.slice(dot + 2).trim(),
+      lower: parseBound(v.slice(0, dot)),
+      upper: parseBound(v.slice(dot + 2)),
     };
   }
-  return { lower: v, upper: v };
+  const bound = parseBound(v);
+  return { lower: bound, upper: bound };
 }
 
 function aggregationKind(kind: RelationshipKind): string {
@@ -138,12 +152,134 @@ function duid(id: string): string {
   return String(Math.abs(hash));
 }
 
+function isAggregationKind(kind: RelationshipKind): boolean {
+  return kind === 'composition' || kind === 'aggregation';
+}
+
 function connectorEaType(kind: RelationshipKind): string {
-  return kind === 'generalization' ? 'Generalization' : 'Association';
+  switch (kind) {
+    case 'generalization':
+      return 'Generalization';
+    case 'composition':
+    case 'aggregation':
+      return 'Aggregation';
+    case 'realization':
+      return 'Realisation';
+    default:
+      return 'Association';
+  }
 }
 
 function linkTag(kind: RelationshipKind): string {
-  return kind === 'generalization' ? 'Generalization' : 'Association';
+  switch (kind) {
+    case 'generalization':
+      return 'Generalization';
+    case 'composition':
+    case 'aggregation':
+      return 'Aggregation';
+    case 'realization':
+      return 'Realisation';
+    default:
+      return 'Association';
+  }
+}
+
+// Per-kind, per-end presentation of the extension-block connector ends,
+// mirroring EA's own emissions for each relationship kind.
+interface ConnectorEndStyle {
+  aggregation: string;
+  containment?: string;
+  isNavigable: boolean;
+  changeable: boolean;
+  targetScope: boolean;
+  styleValue: string;
+}
+
+const EA_NAV_STYLE = {
+  nonNavigable:
+    'Union=0;Derived=0;AllowDuplicates=0;Owned=0;Navigable=Non-Navigable;',
+  navigable: 'Union=0;Derived=0;AllowDuplicates=0;Owned=0;Navigable=Navigable;',
+  unspecified:
+    'Union=0;Derived=0;AllowDuplicates=0;Owned=0;Navigable=Unspecified;',
+  plain: 'Derived=0;DerivedUnion=0;Owned=0;Navigable=Unspecified;',
+} as const;
+
+function connectorEndStyle(
+  rel: RelationshipElement,
+  role: 'source' | 'target',
+): ConnectorEndStyle {
+  if (isAggregationKind(rel.kind) || rel.kind === 'realization') {
+    const base = {
+      containment: 'Unspecified',
+      changeable: true,
+      targetScope: true,
+    };
+    if (rel.kind === 'realization') {
+      return role === 'target'
+        ? {
+            ...base,
+            aggregation: 'none',
+            isNavigable: true,
+            styleValue: EA_NAV_STYLE.navigable,
+          }
+        : {
+            ...base,
+            aggregation: 'none',
+            isNavigable: false,
+            styleValue: EA_NAV_STYLE.nonNavigable,
+          };
+    }
+    return role === 'target'
+      ? {
+          ...base,
+          aggregation: aggregationKind(rel.kind),
+          isNavigable: true,
+          styleValue: EA_NAV_STYLE.navigable,
+        }
+      : {
+          ...base,
+          aggregation: 'none',
+          isNavigable: false,
+          styleValue: EA_NAV_STYLE.nonNavigable,
+        };
+  }
+  if (rel.kind === 'association' && rel.associationClassId) {
+    return {
+      aggregation: 'none',
+      containment: 'Unspecified',
+      isNavigable: false,
+      changeable: true,
+      targetScope: true,
+      styleValue: EA_NAV_STYLE.unspecified,
+    };
+  }
+  return {
+    aggregation: 'none',
+    isNavigable: false,
+    changeable: false,
+    targetScope: false,
+    styleValue: EA_NAV_STYLE.plain,
+  };
+}
+
+// The connector `properties` attributes EA expects per kind.
+function connectorPropertiesAttrs(rel: RelationshipElement): string {
+  const eaType = connectorEaType(rel.kind);
+  const attrs: string[] = [` ea_type="${esc(eaType)}"`];
+  if (rel.kind === 'composition') {
+    attrs.push(' subtype="Strong"');
+  } else if (rel.kind === 'association' && rel.associationClassId) {
+    attrs.push(' subtype="Class"');
+    if (rel.name) {
+      attrs.push(` name="${esc(rel.name)}"`);
+    }
+  }
+  const direction =
+    isAggregationKind(rel.kind) || rel.kind === 'realization'
+      ? 'Source -> Destination'
+      : 'Unspecified';
+  attrs.push(` direction="${esc(direction)}"`);
+  return attrs.join('');
 }
 
 // Serializes a stored class-diagram document to UML 2 XMI (XMI 2.1) in
@@ -186,13 +322,29 @@ export class XmiExporter {
     );
 
     const generalizationsBySubclass = new Map<string, RelationshipElement[]>();
+    // Aggregation-kind relationships whose target (whole) end is emitted as
+    // an ownedAttribute of the source (part) class, mirroring EA's nesting.
+    const aggregationsBySource = new Map<string, RelationshipElement[]>();
     const associations: RelationshipElement[] = [];
+    const realizations: RelationshipElement[] = [];
+    const tiedAssociations: RelationshipElement[] = [];
+    const tiedRelByClassId = new Map<string, RelationshipElement>();
     for (const rel of diagram.relationships) {
       if (rel.kind === 'generalization') {
         const arr = generalizationsBySubclass.get(rel.sourceId) ?? [];
         arr.push(rel);
         generalizationsBySubclass.set(rel.sourceId, arr);
+      } else if (rel.kind === 'realization') {
+        realizations.push(rel);
+      } else if (rel.associationClassId) {
+        tiedAssociations.push(rel);
+        tiedRelByClassId.set(rel.associationClassId, rel);
       } else {
+        if (isAggregationKind(rel.kind)) {
+          const arr = aggregationsBySource.get(rel.sourceId) ?? [];
+          arr.push(rel);
+          aggregationsBySource.set(rel.sourceId, arr);
+        }
         associations.push(rel);
       }
     }
@@ -203,39 +355,24 @@ export class XmiExporter {
       parts.push(
         `<packagedElement xmi:type="uml:Class" xmi:id="${esc(classId)}" name="${esc(cls.name)}" visibility="public">`,
       );
-      for (const attr of cls.attributes) {
-        liCounter += 1;
-        parts.push(
-          `<ownedAttribute xmi:type="uml:Property" xmi:id="${esc(eaId('EAID', attr.id))}" name="${esc(attr.name)}" visibility="public" isStatic="false" isReadOnly="false" isDerived="false" isOrdered="false" isUnique="true" isDerivedUnion="false">`,
-        );
-        parts.push(
-          `<lowerValue xmi:type="uml:LiteralInteger" xmi:id="${esc(liId(liCounter, attr.id))}" value="1"/>`,
-        );
-        liCounter += 1;
-        parts.push(
-          `<upperValue xmi:type="uml:LiteralInteger" xmi:id="${esc(liId(liCounter, attr.id))}" value="1"/>`,
-        );
-        if (attr.type) {
-          parts.push(`<type xmi:idref="${esc(primitiveTypeId(attr.type))}"/>`);
-        }
-        parts.push('</ownedAttribute>');
-      }
-      for (const op of cls.operations) {
-        const opId = eaId('EAID', op.id);
-        parts.push(
-          `<ownedOperation xmi:id="${esc(opId)}" name="${esc(op.name)}" visibility="public">`,
-        );
-        if (op.returnType) {
-          parts.push(
-            `<ownedParameter xmi:id="${esc(`EAID_RT000000_${guidRestHex(op.id)}`)}" name="return" direction="return" type="${esc(primitiveTypeId(op.returnType))}"/>`,
-          );
-        }
-        parts.push('</ownedOperation>');
-      }
+      liCounter = this.renderClassMembers(parts, cls, liCounter);
       const gens = generalizationsBySubclass.get(cls.id) ?? [];
       for (const g of gens) {
         parts.push(
           `<generalization xmi:type="uml:Generalization" xmi:id="${esc(eaId('EAID', g.id))}" general="${esc(eaId('EAID', g.targetId))}"/>`,
+        );
+      }
+      // EA nesting for composition/aggregation: the target (whole) end is an
+      // ownedAttribute of the source (part) class carrying the association
+      // reference; the association itself only owns the source (part) end.
+      for (const rel of aggregationsBySource.get(cls.id) ?? []) {
+        parts.push(
+          this.renderClassOwnedEnd(
+            `dst${rel.id}`,
+            rel.targetId,
+            eaId('EAID', rel.id),
+            rel.targetMultiplicity,
+          ),
         );
       }
       parts.push('</packagedElement>');
@@ -243,23 +380,88 @@ export class XmiExporter {
 
     for (const rel of associations) {
       const assocId = eaId('EAID', rel.id);
+      if (isAggregationKind(rel.kind)) {
+        // EA convention: the target (whole) end is the first memberEnd and
+        // is owned by the source class (emitted above); only the source
+        // (part) end is association-owned, carrying the aggregation kind.
+        parts.push(
+          `<packagedElement xmi:type="uml:Association" xmi:id="${esc(assocId)}" name="${esc(rel.name)}" visibility="public">`,
+        );
+        parts.push(this.renderMemberEndRef(`dst${rel.id}`));
+        parts.push(this.renderMemberEndRef(`src${rel.id}`));
+        parts.push(
+          this.renderOwnedEnd(
+            `src${rel.id}`,
+            rel.sourceId,
+            assocId,
+            aggregationKind(rel.kind),
+            rel.sourceMultiplicity,
+          ),
+        );
+        parts.push('</packagedElement>');
+      } else {
+        parts.push(
+          `<packagedElement xmi:type="uml:Association" xmi:id="${esc(assocId)}" name="${esc(rel.name)}" visibility="public">`,
+        );
+        parts.push(
+          this.renderEnd(
+            `src${rel.id}`,
+            rel.sourceId,
+            assocId,
+            'none',
+            rel.sourceMultiplicity,
+          ),
+        );
+        parts.push(
+          this.renderEnd(
+            `dst${rel.id}`,
+            rel.targetId,
+            assocId,
+            'none',
+            rel.targetMultiplicity,
+          ),
+        );
+        parts.push('</packagedElement>');
+      }
+    }
+
+    // Realizations: standalone uml:Realization packaged elements, client =
+    // source class, supplier = target class (EA emits no name).
+    for (const rel of realizations) {
       parts.push(
-        `<packagedElement xmi:type="uml:Association" xmi:id="${esc(assocId)}" name="${esc(rel.name)}" visibility="public">`,
+        `<packagedElement xmi:type="uml:Realization" xmi:id="${esc(eaId('EAID', rel.id))}" visibility="public" supplier="${esc(eaId('EAID', rel.targetId))}" client="${esc(eaId('EAID', rel.sourceId))}"/>`,
       );
+    }
+
+    // Association classes: a uml:AssociationClass carries the class's id and
+    // name plus both participant ends; no separate uml:Association is
+    // emitted for the tied association.
+    for (const rel of tiedAssociations) {
+      const cls = diagram.elements.find((e) => e.id === rel.associationClassId);
+      if (!cls) {
+        continue;
+      }
+      const assocClassId = eaId('EAID', cls.id);
       parts.push(
-        this.renderEnd(
+        `<packagedElement xmi:type="uml:AssociationClass" xmi:id="${esc(assocClassId)}" name="${esc(cls.name)}" visibility="public">`,
+      );
+      liCounter = this.renderClassMembers(parts, cls, liCounter);
+      parts.push(this.renderMemberEndRef(`src${rel.id}`));
+      parts.push(
+        this.renderOwnedEnd(
           `src${rel.id}`,
           rel.sourceId,
-          assocId,
-          aggregationKind(rel.kind),
+          assocClassId,
+          'none',
           rel.sourceMultiplicity,
         ),
       );
+      parts.push(this.renderMemberEndRef(`dst${rel.id}`));
       parts.push(
-        this.renderEnd(
+        this.renderOwnedEnd(
           `dst${rel.id}`,
           rel.targetId,
-          assocId,
+          assocClassId,
           'none',
           rel.targetMultiplicity,
         ),
@@ -332,6 +534,9 @@ export class XmiExporter {
     parts.push('</element>');
     for (const cls of diagram.elements) {
       const classId = eaId('EAID', cls.id);
+      const tiedRel = diagram.relationships.find(
+        (rel) => rel.associationClassId === cls.id,
+      );
       parts.push(
         `<element xmi:idref="${esc(classId)}" xmi:type="uml:Class" name="${esc(cls.name)}" scope="public">`,
       );
@@ -339,7 +544,7 @@ export class XmiExporter {
         `<model package="${esc(packageId)}" tpos="0" ea_eleType="element"/>`,
       );
       parts.push(
-        '<properties isSpecification="false" sType="Class" nType="0" scope="public" isRoot="false" isLeaf="false" isAbstract="false" isActive="false"/>',
+        `<properties isSpecification="false" sType="Class" nType="${tiedRel ? '17' : '0'}" scope="public" isRoot="false" isLeaf="false" isAbstract="false" isActive="false"/>`,
       );
       if (cls.attributes.length > 0) {
         parts.push('<attributes>');
@@ -392,6 +597,13 @@ export class XmiExporter {
         }
         parts.push('</links>');
       }
+      if (tiedRel) {
+        // Association-class linkage: the class element references its tied
+        // connector via conID.
+        parts.push(
+          `<extendedProperties tagged="0" conID="${esc(eaId('EAID', tiedRel.id))}"/>`,
+        );
+      }
       parts.push('</element>');
     }
     parts.push('</elements>');
@@ -419,6 +631,8 @@ export class XmiExporter {
           localIdByClass,
           classById,
           'source',
+          rel.sourceMultiplicity,
+          connectorEndStyle(rel, 'source'),
         ),
       );
       parts.push(
@@ -427,11 +641,19 @@ export class XmiExporter {
           localIdByClass,
           classById,
           'target',
+          rel.targetMultiplicity,
+          connectorEndStyle(rel, 'target'),
         ),
       );
+      parts.push(`<properties${connectorPropertiesAttrs(rel)}/>`);
       parts.push(
-        `<properties ea_type="${esc(connectorEaType(rel.kind))}" direction="Unspecified"/>`,
+        `<labels lb="${esc(rel.sourceMultiplicity ?? '')}" rb="${esc(rel.targetMultiplicity ?? '')}"/>`,
       );
+      if (rel.associationClassId) {
+        parts.push(
+          `<extendedProperties virtualInheritance="0" associationclass="${esc(eaId('EAID', rel.associationClassId))}"/>`,
+        );
+      }
       parts.push('</connector>');
     }
     parts.push('</connectors>');
@@ -442,6 +664,8 @@ export class XmiExporter {
     localIdByClass: Map<string, number>,
     classById: Map<string, { name: string }>,
     role: 'source' | 'target',
+    multiplicity: string | undefined,
+    style: ConnectorEndStyle,
   ): string {
     const classId = eaId('EAID', classRefId);
     const localId = localIdByClass.get(classRefId);
@@ -451,12 +675,16 @@ export class XmiExporter {
     p.push(
       `<model ea_localid="${localId ?? 0}" type="Class" name="${esc(name)}"/>`,
     );
-    p.push('<role visibility="Public"/>');
-    p.push('<type aggregation="none"/>');
-    p.push('<modifiers isOrdered="false" isNavigable="false"/>');
     p.push(
-      '<style value="Derived=0;DerivedUnion=0;Owned=0;Navigable=Unspecified;"/>',
+      `<role visibility="Public"${style.targetScope ? ' targetScope="instance"' : ''}/>`,
     );
+    p.push(
+      `<type${multiplicity ? ` multiplicity="${esc(multiplicity)}"` : ''} aggregation="${style.aggregation}"${style.containment ? ` containment="${style.containment}"` : ''}/>`,
+    );
+    p.push(
+      `<modifiers isOrdered="false"${style.changeable ? ' changeable="none"' : ''} isNavigable="${style.isNavigable}"/>`,
+    );
+    p.push(`<style value="${style.styleValue}"/>`);
     p.push('<documentation/>');
     p.push('<xrefs/>');
     p.push('<tags/>');
@@ -510,7 +738,7 @@ export class XmiExporter {
     for (const rel of diagram.relationships) {
       seq += 1;
       parts.push(
-        `<element geometry="${esc(EDGE_GEOMETRY)}" subject="${esc(eaId('EAID', rel.id))}" seqno="${seq}" style="Mode=3;EOID=${duid(rel.sourceId)};SOID=${duid(rel.targetId)};Color=-1;LWidth=0;Hidden=0;"/>`,
+        `<element geometry="${esc(EDGE_GEOMETRY)}" subject="${esc(eaId('EAID', rel.id))}" seqno="${seq}" style="Mode=3;EOID=${duid(rel.targetId)};SOID=${duid(rel.sourceId)};Color=-1;LWidth=0;Hidden=0;"/>`,
       );
     }
     parts.push('</elements>');
@@ -518,9 +746,108 @@ export class XmiExporter {
     parts.push('</diagrams>');
   }
 
-  // One association end: the nested memberEnd reference followed by its
-  // ownedEnd uml:Property, typed via a nested <type xmi:idref/> child and
-  // carrying lowerValue/upperValue multiplicity bounds.
+  // The class's structural members (attributes, operations), shared by the
+  // uml:Class and uml:AssociationClass serializations. Returns the advanced
+  // liCounter.
+  private renderClassMembers(
+    parts: string[],
+    cls: ClassElement,
+    liCounter: number,
+  ): number {
+    for (const attr of cls.attributes) {
+      liCounter += 1;
+      parts.push(
+        `<ownedAttribute xmi:type="uml:Property" xmi:id="${esc(eaId('EAID', attr.id))}" name="${esc(attr.name)}" visibility="public" isStatic="false" isReadOnly="false" isDerived="false" isOrdered="false" isUnique="true" isDerivedUnion="false">`,
+      );
+      parts.push(
+        `<lowerValue xmi:type="uml:LiteralInteger" xmi:id="${esc(liId(liCounter, attr.id))}" value="1"/>`,
+      );
+      liCounter += 1;
+      parts.push(
+        `<upperValue xmi:type="uml:LiteralInteger" xmi:id="${esc(liId(liCounter, attr.id))}" value="1"/>`,
+      );
+      if (attr.type) {
+        parts.push(`<type xmi:idref="${esc(primitiveTypeId(attr.type))}"/>`);
+      }
+      parts.push('</ownedAttribute>');
+    }
+    for (const op of cls.operations) {
+      const opId = eaId('EAID', op.id);
+      parts.push(
+        `<ownedOperation xmi:id="${esc(opId)}" name="${esc(op.name)}" visibility="public">`,
+      );
+      if (op.returnType) {
+        parts.push(
+          `<ownedParameter xmi:id="${esc(`EAID_RT000000_${guidRestHex(op.id)}`)}" name="return" direction="return" type="${esc(primitiveTypeId(op.returnType))}"/>`,
+        );
+      }
+      parts.push('</ownedOperation>');
+    }
+    return liCounter;
+  }
+
+  // One association end. EA's dialect serializes each member end as a
+  // nested memberEnd reference followed by its end Property (typed via a
+  // nested <type xmi:idref/> child, carrying lowerValue/upperValue
+  // multiplicity bounds). Depending on the kind, the end Property is either
+  // association-owned (ownedEnd), or — for the whole end of an
+  // aggregation-kind relationship — an ownedAttribute of the part class.
+  private endPropertyId(endKey: string): string {
+    return `EAID_${endKey.slice(0, 3)}${uuidHex(endKey.slice(3))}`;
+  }
+
+  private renderMemberEndRef(endKey: string): string {
+    return `<memberEnd xmi:idref="${esc(this.endPropertyId(endKey))}"/>`;
+  }
+
+  private renderOwnedEnd(
+    endKey: string,
+    classRefId: string,
+    assocId: string,
+    aggregation: string,
+    multiplicity: string | undefined,
+  ): string {
+    return `<ownedEnd xmi:type="uml:Property" xmi:id="${esc(this.endPropertyId(endKey))}" visibility="public" association="${esc(assocId)}" isStatic="false" isReadOnly="false" isDerived="false" isOrdered="false" isUnique="true" isDerivedUnion="false" aggregation="${aggregation}">${this.renderEndBody(endKey, classRefId, multiplicity)}</ownedEnd>`;
+  }
+
+  // The whole end of an aggregation-kind relationship, nested inside the
+  // part class as an ownedAttribute (EA's end-nesting convention).
+  private renderClassOwnedEnd(
+    endKey: string,
+    classRefId: string,
+    assocId: string,
+    multiplicity: string | undefined,
+  ): string {
+    return `<ownedAttribute xmi:type="uml:Property" xmi:id="${esc(this.endPropertyId(endKey))}" visibility="public" association="${esc(assocId)}" isStatic="false" isReadOnly="false" isDerived="false" isOrdered="false" isUnique="true" isDerivedUnion="false" aggregation="none">${this.renderEndBody(endKey, classRefId, multiplicity)}</ownedAttribute>`;
+  }
+
+  private renderEndBody(
+    endKey: string,
+    classRefId: string,
+    multiplicity: string | undefined,
+  ): string {
+    const parts: string[] = [];
+    parts.push(`<type xmi:idref="${esc(eaId('EAID', classRefId))}"/>`);
+    const bounds = parseMultiplicity(multiplicity);
+    if (bounds) {
+      const renderBound = (
+        bound: MultBound,
+        tag: string,
+        suffix: string,
+      ): string => {
+        if (bound.kind === 'unlimited') {
+          return `<${tag} xmi:type="uml:LiteralUnlimitedNatural" xmi:id="${esc(eaId('EAID', endKey + suffix))}" value="-1"/>`;
+        }
+        return `<${tag} xmi:type="uml:LiteralInteger" xmi:id="${esc(eaId('EAID', endKey + suffix))}" value="${esc(bound.value)}"/>`;
+      };
+      parts.push(renderBound(bounds.lower, 'lowerValue', 'Lower'));
+      parts.push(renderBound(bounds.upper, 'upperValue', 'Upper'));
+    }
+    return parts.join('');
+  }
+
+  // Plain association shape (both ends association-owned, isReadOnly per
+  // EA's plain-association emission).
   private renderEnd(
     endKey: string,
     classRefId: string,
@@ -528,24 +855,13 @@ export class XmiExporter {
     aggregation: string,
     multiplicity: string | undefined,
   ): string {
-    const endId = `EAID_${endKey.slice(0, 3)}${uuidHex(endKey.slice(3))}`;
+    const endId = this.endPropertyId(endKey);
     const parts: string[] = [];
     parts.push(`<memberEnd xmi:idref="${esc(endId)}"/>`);
     parts.push(
       `<ownedEnd xmi:type="uml:Property" xmi:id="${esc(endId)}" visibility="public" association="${esc(assocId)}" isStatic="false" isReadOnly="true" isDerived="false" isOrdered="false" isUnique="true" isDerivedUnion="false" aggregation="${aggregation}">`,
     );
-    parts.push(`<type xmi:idref="${esc(eaId('EAID', classRefId))}"/>`);
-    const bounds = parseMultiplicity(multiplicity);
-    if (bounds) {
-      if (bounds.lower !== '') {
-        parts.push(
-          `<lowerValue xmi:type="uml:LiteralInteger" xmi:id="${esc(eaId('EAID', `${endKey}Lower`))}" value="${esc(bounds.lower)}"/>`,
-        );
-      }
-      parts.push(
-        `<upperValue xmi:type="uml:LiteralUnlimitedNatural" xmi:id="${esc(eaId('EAID', `${endKey}Upper`))}" value="${esc(bounds.upper)}"/>`,
-      );
-    }
+    parts.push(this.renderEndBody(endKey, classRefId, multiplicity));
     parts.push('</ownedEnd>');
     return parts.join('');
   }

@@ -170,19 +170,26 @@ function formatMultiplicity(
   return `${l}..${u}`;
 }
 
+// Normalizes a bound value: EA writes `*` as -1 (LiteralUnlimitedNatural),
+// so -1 maps back to `*` regardless of the entry's xmi:type; literal `*`
+// values from other tools keep working unchanged.
+function normalizeBoundValue(value: string | undefined): string | undefined {
+  return value?.trim() === '-1' ? '*' : value;
+}
+
 // Reads an association end's multiplicity, supporting both nested
 // lowerValue/upperValue entries and direct lower/upper attributes.
 function endMultiplicity(endNode: unknown): string {
   const a = attrs(endNode);
-  let lower = a.lower;
-  let upper = a.upper;
+  let lower = normalizeBoundValue(a.lower);
+  let upper = normalizeBoundValue(a.upper);
   const lowerNode = child(endNode, 'lowerValue');
   if (lowerNode) {
-    lower = attrs(asArray(lowerNode)[0]).value ?? lower;
+    lower = normalizeBoundValue(attrs(asArray(lowerNode)[0]).value) ?? lower;
   }
   const upperNode = child(endNode, 'upperValue');
   if (upperNode) {
-    upper = attrs(asArray(upperNode)[0]).value ?? upper;
+    upper = normalizeBoundValue(attrs(asArray(upperNode)[0]).value) ?? upper;
   }
   return formatMultiplicity(lower, upper);
 }
@@ -391,11 +398,14 @@ export class XmiImporter {
     };
 
     // Classes and relationships live in the single package (EA's shape).
+    // Association classes are model classes too: they reuse the class
+    // parsing path so their attributes/operations work.
     const contentRoot = pkg;
     const packaged = asArray(child(contentRoot, 'packagedElement'));
-    const classNodes = packaged.filter(
-      (el) => attrs(el)['xmi:type'] === 'uml:Class',
-    );
+    const classNodes = packaged.filter((el) => {
+      const t = attrs(el)['xmi:type'];
+      return t === 'uml:Class' || t === 'uml:AssociationClass';
+    });
     const classByXmiId = new Map<string, ClassElement>();
 
     classNodes.forEach((classNode, index) => {
@@ -416,6 +426,26 @@ export class XmiImporter {
     const relationships: RelationshipElement[] = [];
     const findClass = (xmiId: string | undefined): ClassElement | undefined =>
       xmiId ? classByXmiId.get(xmiId) : undefined;
+
+    // Extension connectors: the tied-association name rides on the
+    // connector's `properties name` (the model's AssociationClass carries
+    // the class name instead), and the `associationclass` extended property
+    // maps a connector to its tied class.
+    const connectorNameByIdRef = new Map<string, string>();
+    const connectorNameByTieClass = new Map<string, string>();
+    for (const connector of findAllByLocalName(doc, 'connector')) {
+      const props = asArray(child(connector, 'properties'))[0];
+      const name = props ? attrs(props).name : undefined;
+      const idRef = attrs(connector)['xmi:idref'];
+      if (idRef && name) {
+        connectorNameByIdRef.set(idRef, name);
+      }
+      const ext = asArray(child(connector, 'extendedProperties'))[0];
+      const tie = ext ? attrs(ext).associationclass : undefined;
+      if (tie && name) {
+        connectorNameByTieClass.set(tie, name);
+      }
+    }
 
     // Nested generalizations: <generalization general="..."/> inside a class.
     for (const classNode of classNodes) {
@@ -440,14 +470,16 @@ export class XmiImporter {
       }
     }
 
-    // Standalone generalizations and associations among packaged elements.
+    // Standalone generalizations, associations, realizations, and
+    // association classes among packaged elements.
+    const relByModelId = new Map<string, RelationshipElement>();
     for (const el of packaged) {
       const a = attrs(el);
       if (a['xmi:type'] === 'uml:Generalization') {
         const source = findClass(a.specific);
         const target = findClass(a.general);
         if (source && target) {
-          relationships.push({
+          const rel: RelationshipElement = {
             id: randomUUID(),
             kind: 'generalization',
             name: a.name ?? '',
@@ -455,12 +487,89 @@ export class XmiImporter {
             targetId: target.id,
             sourceMultiplicity: '',
             targetMultiplicity: '',
+          };
+          relationships.push(rel);
+          relByModelId.set(a['xmi:id'] ?? '', rel);
+        }
+      } else if (a['xmi:type'] === 'uml:Realization') {
+        // Standalone realization: client class is the source, supplier
+        // class is the target.
+        const source = findClass(a.client);
+        const target = findClass(a.supplier);
+        if (source && target) {
+          relationships.push({
+            id: randomUUID(),
+            kind: 'realization',
+            name: a.name ?? '',
+            sourceId: source.id,
+            targetId: target.id,
+            sourceMultiplicity: '',
+            targetMultiplicity: '',
           });
+        }
+      } else if (a['xmi:type'] === 'uml:AssociationClass') {
+        // An association class is a class element plus a tied association
+        // between the participants resolved from its member ends.
+        const rel = this.parseAssociation(
+          el,
+          { ...a, name: '' },
+          idMap,
+          findClass,
+        );
+        const tiedClass = a['xmi:id']
+          ? classByXmiId.get(a['xmi:id'])
+          : undefined;
+        if (rel && tiedClass) {
+          rel.associationClassId = tiedClass.id;
+          const connectorName = connectorNameByTieClass.get(a['xmi:id']);
+          if (connectorName) {
+            rel.name = connectorName;
+          }
+          relationships.push(rel);
         }
       } else if (a['xmi:type'] === 'uml:Association') {
         const rel = this.parseAssociation(el, a, idMap, findClass);
         if (rel) {
           relationships.push(rel);
+          relByModelId.set(a['xmi:id'] ?? '', rel);
+        }
+      }
+    }
+
+    // Extension-linkage fallback: a plain uml:Association whose extension
+    // connector carries the `associationclass` property, or whose linked
+    // class element carries `conID`, ties the class the same way as an
+    // explicit uml:AssociationClass.
+    for (const connector of findAllByLocalName(doc, 'connector')) {
+      const connectorId = attrs(connector)['xmi:idref'];
+      const ext = asArray(child(connector, 'extendedProperties'))[0];
+      const assocClassRef = ext ? attrs(ext).associationclass : undefined;
+      if (!connectorId || !assocClassRef) {
+        continue;
+      }
+      const rel = relByModelId.get(connectorId);
+      const tiedClass = classByXmiId.get(assocClassRef);
+      if (rel && tiedClass && !rel.associationClassId) {
+        rel.associationClassId = tiedClass.id;
+        const connectorName = connectorNameByIdRef.get(connectorId);
+        if (connectorName && !rel.name) {
+          rel.name = connectorName;
+        }
+      }
+    }
+    for (const elementNode of findAllByLocalName(doc, 'element')) {
+      const ext = asArray(child(elementNode, 'extendedProperties'))[0];
+      const conId = ext ? attrs(ext).conID : undefined;
+      if (!conId) {
+        continue;
+      }
+      const rel = relByModelId.get(conId);
+      const tiedClass = classByXmiId.get(attrs(elementNode)['xmi:idref'] ?? '');
+      if (rel && tiedClass && !rel.associationClassId) {
+        rel.associationClassId = tiedClass.id;
+        const connectorName = connectorNameByIdRef.get(conId);
+        if (connectorName && !rel.name) {
+          rel.name = connectorName;
         }
       }
     }

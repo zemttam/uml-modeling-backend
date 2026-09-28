@@ -84,6 +84,28 @@ export class ProjectsService {
     return this.projectsRepository.save(project);
   }
 
+  // Replace-in-place import: ownership-checked atomic update of both the
+  // project's name and its whole diagram document.
+  async replaceDocument(
+    id: string,
+    userId: string,
+    name: string,
+    diagram: unknown,
+  ): Promise<ProjectEntity> {
+    const project = await this.projectsRepository.findOne({
+      where: { id },
+    });
+    if (!project) {
+      throw new NotFoundException('project not found');
+    }
+    if (project.ownerId !== userId) {
+      throw new ForbiddenException('not your project');
+    }
+    project.name = name;
+    project.diagram = diagram;
+    return this.projectsRepository.save(project);
+  }
+
   async remove(id: string, userId: string): Promise<void> {
     const project = await this.projectsRepository.findOne({
       where: { id },

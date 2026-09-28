@@ -18,8 +18,10 @@ import { FileInterceptor } from '@nestjs/platform-express/multer';
 import { Request, Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ProjectsService } from './projects.service';
+import { resolveImportedProjectName } from './imported-name';
 import { XmiExporter } from '../diagrams/xmi-exporter';
 import { XmiImporter, XmiParseError } from '../diagrams/xmi-importer';
+import { DiagramGateway } from '../diagrams/diagrams.gateway';
 import { normalizeDiagram } from '../diagrams/diagram.types';
 import { SpringExportService } from '../spring-export/spring-export.service';
 
@@ -27,12 +29,6 @@ declare module 'express-serve-static-core' {
   interface Request {
     user?: { sub: string; username: string };
   }
-}
-
-function defaultTimestamp(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 }
 
 @Controller('projects')
@@ -43,6 +39,7 @@ export class ProjectsController {
     private readonly xmiExporter: XmiExporter,
     private readonly xmiImporter: XmiImporter,
     private readonly springExportService: SpringExportService,
+    private readonly diagramsGateway: DiagramGateway,
   ) {}
 
   @Post()
@@ -73,7 +70,7 @@ export class ProjectsController {
       }
       throw error;
     }
-    const name = parsed.name ?? `Class Diagram ${defaultTimestamp()}`;
+    const name = resolveImportedProjectName(parsed.name);
     // Persist the borrowed package/diagram names into the created project's
     // diagram document so a re-export reproduces them.
     const diagram = {
@@ -82,6 +79,48 @@ export class ProjectsController {
       diagramName: parsed.diagramName,
     };
     const project = await this.projectsService.create(userId, name, diagram);
+    return { id: project.id, name: project.name };
+  }
+
+  // Replace-in-place import: parses and validates the upload first (any
+  // XmiParseError is rejected as `Wrong format` before a single write), then
+  // atomically renames the project and swaps its diagram document, and
+  // finally pushes the replacement to every connected collaborator.
+  @Post(':id/import')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
+  async importXmiIntoProject(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    const userId = (req.user as { sub: string }).sub;
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+    let parsed;
+    try {
+      parsed = this.xmiImporter.parse(file.buffer.toString('utf-8'));
+    } catch (error) {
+      if (error instanceof XmiParseError) {
+        throw new BadRequestException('Wrong format');
+      }
+      throw error;
+    }
+    const name = resolveImportedProjectName(parsed.name);
+    const diagram = {
+      ...parsed.diagram,
+      packageName: parsed.packageName,
+      diagramName: parsed.diagramName,
+    };
+    const project = await this.projectsService.replaceDocument(
+      id,
+      userId,
+      name,
+      diagram,
+    );
+    this.diagramsGateway.replaceDocument(id, diagram);
     return { id: project.id, name: project.name };
   }
 

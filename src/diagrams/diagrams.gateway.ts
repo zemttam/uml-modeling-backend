@@ -203,6 +203,26 @@ export class DiagramGateway
     await this.flushSave(projectId);
   }
 
+  // --- whole-document replacement (project XMI import) ---
+
+  // Called by the projects controller after the imported document has been
+  // persisted. Cancels and discards any pending autosave (it would carry only
+  // pre-import content which is intentionally discarded), swaps the
+  // in-memory doc when the room's doc is loaded, drops stale element locks,
+  // and rebroadcasts the authoritative full state to the whole room.
+  replaceDocument(projectId: string, doc: DiagramDocument): void {
+    const timer = this.saveTimers.get(projectId);
+    if (timer) {
+      clearTimeout(timer);
+      this.saveTimers.delete(projectId);
+    }
+    if (this.diagrams.has(projectId)) {
+      this.diagrams.set(projectId, normalizeDiagram(doc));
+    }
+    this.locks.delete(projectId);
+    this.server.to(roomFor(projectId)).emit(DIAGRAM_EVENT.STATE, doc);
+  }
+
   // --- helpers ---
 
   private async loadDiagram(projectId: string): Promise<DiagramDocument> {

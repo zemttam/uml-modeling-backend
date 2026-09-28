@@ -29,7 +29,7 @@ import { SpringExportModule } from './spring-export/spring-export.module';
         entities: [UserEntity, ProjectEntity],
         synchronize: true,
         ssl: {
-          rejectUnauthorized: true, // Set to true in production with a valid CA certificate
+          rejectUnauthorized: process.env.NODE_ENV === 'production', // Set to true in production with a valid CA certificate
         },
       }),
     }),

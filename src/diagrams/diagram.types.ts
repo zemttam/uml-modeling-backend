@@ -2,7 +2,11 @@
 // and (mirrored on) the frontend client. Stored as JSONB on the project.
 
 export type RelationshipKind =
-  'association' | 'generalization' | 'composition' | 'aggregation';
+  | 'association'
+  | 'generalization'
+  | 'composition'
+  | 'aggregation'
+  | 'realization';
 
 export interface ClassAttribute {
   id: string;
@@ -34,6 +38,9 @@ export interface RelationshipElement {
   targetId: string;
   sourceMultiplicity: string;
   targetMultiplicity: string;
+  // Association-class tie: id of the class element attached to this
+  // association. Absent on every other relationship.
+  associationClassId?: string;
 }
 
 export type DiagramElement = ClassElement;

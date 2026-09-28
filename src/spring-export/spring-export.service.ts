@@ -17,7 +17,7 @@ const MAX_TOKENS = 60000;
 const PROJECT_NAME = 'spring-boot-project';
 const REPAIR_PREFIX = 'Your previous response was not valid: ';
 
-const EXPORT_SYSTEM_PROMPT = `You convert UML class diagram documents into complete Spring Boot project files.
+export const EXPORT_SYSTEM_PROMPT = `You convert UML class diagram documents into complete Spring Boot project files.
 
 Respond with ONE JSON object and nothing else. No markdown, no code
 fences, no commentary.
@@ -50,16 +50,64 @@ Architecture (Model-Service-Controller):
 - Derive all names (classes, fields, methods, endpoints) from the diagram's
   names. Never invent classes, attributes, or operations not in the diagram.
 
+- Ignore the diagram's layout fields ("x", "y") and the elements' "id"
+  fields: they are canvas metadata only and MUST NOT appear in the generated
+  code or file names.
+
+Attribute type mapping (case-insensitive match on the stored type string):
+- "int" -> Integer, "long" -> Long, "boolean" -> Boolean,
+  "double" -> Double, "float" -> Double, "char" -> String,
+  "String" -> String.
+- Date-like types ("Date", "LocalDate", "DateTime") -> LocalDate.
+- Any other stored type -> String.
+
 UML-to-JPA mapping rules:
 - Generalization: the "from" class inherits from the "to" class (Java
   extends between entity classes).
 - Association: a JPA relation whose kind and ownership follow the stored
-  multiplicities (@ManyToOne for a single target, @OneToMany / @ManyToMany
-  for multiple).
-- Composition ("from" is the whole): a JPA relation with
-  cascade = CascadeType.ALL and orphanRemoval = true from the whole to the
-  part.
+  multiplicities. Multiplicity grammar: "0..1" and "1" are single-valued;
+  "*", "0..*", "1..*", and bounded ranges like "2..5" are many-valued; an
+  empty multiplicity is unspecified and you choose the most natural
+  relation. Both ends single-valued -> @OneToOne; this end single and the
+  other many -> @ManyToOne on the single side with the inverse @OneToMany
+  on the many side; both ends many-valued -> @ManyToMany.
+- Composition ("to" is the whole): a JPA relation with
+  cascade = CascadeType.ALL and orphanRemoval = true from the whole (the
+  "to" entity) to the part (the "from" entity).
 - Aggregation: a plain JPA relation without cascade/orphanRemoval.
+- Realization: the target ("to") class, as the supplier, is generated as a
+  Java interface declaring the supplier class's operations as its methods;
+  the source ("from") class implements that interface. Do NOT generate an
+  entity, repository, service, or controller for the supplier class. Any
+  attributes on the supplier class are ignored (interfaces carry behavior,
+  not state).
+- Association class: when a relationship references another class via
+  "associationClassId", that tied class is generated as a join entity
+  holding a @ManyToOne relation to each end of the tied association (its
+  extra attributes become ordinary columns), and both endpoint entities get
+  the corresponding inverse @OneToMany to the join entity. Do not generate
+  an unrelated standalone slice for the tied class.
+
+Seeder (mandatory, exactly two project-level files):
+- A @Component class named DataSeeder and a @RestController named
+  SeedController mapping GET /api/seed.
+- GET /api/seed first deletes all existing rows through the repositories
+  in reverse-dependency order (children before parents; join entities and
+  composition parts before wholes), then inserts approximately 15 rows
+  per entity, and returns a short JSON summary of the inserted row counts
+  per entity. Repeated calls re-seed: every call truncates first, so rows
+  never accumulate.
+- Insert referenced parent rows before the rows that reference them;
+  composition parts are created attached to valid wholes so cascade
+  semantics hold; join entities reference valid seeded parents.
+- Use ThreadLocalRandom for all random values. Column-aware values:
+  fields whose name contains "name", "first", or "last" (case-insensitive,
+  e.g. firstName, lastName) get random realistic names from a small
+  built-in list; other String fields get random words from a small
+  built-in list; Integer/int and Long/long fields get random integers in
+  1..100; Boolean/boolean fields get random true/false; LocalDate fields
+  get random dates; Double/Float fields get random values in 1..100.
+  Never set @Id fields; identifiers are left to auto-generation.
 
 application.properties MUST configure the datasource using environment
 variable placeholders with these exact defaults:
@@ -69,7 +117,9 @@ spring.datasource.password=\${DB_PASSWORD:1234}
 plus spring.jpa.hibernate.ddl-auto=update and a JPA dialect for PostgreSQL.
 
 Also produce a root README.md listing every generated endpoint (HTTP
-method, path, purpose) so the API can be tested from Postman.`;
+method, path, purpose) so the API can be tested from Postman, and
+explicitly include the seed endpoint "GET /api/seed" in that list with its
+method, path, and purpose (it truncates and re-seeds all tables).`;
 
 export interface GeneratedFile {
   path: string;
@@ -119,6 +169,7 @@ export function validateSpringProject(raw: unknown): SpringProject {
   const files: GeneratedFile[] = [];
   let hasPom = false;
   let hasEntity = false;
+  let hasReadme = false;
   for (const entry of obj.files) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       throw new SpringExportValidationError('files entries must be objects');
@@ -143,6 +194,9 @@ export function validateSpringProject(raw: unknown): SpringProject {
     if (normalized === 'pom.xml') {
       hasPom = true;
     }
+    if (normalized === 'README.md') {
+      hasReadme = true;
+    }
     if (file.content.includes('@Entity')) {
       hasEntity = true;
     }
@@ -154,6 +208,11 @@ export function validateSpringProject(raw: unknown): SpringProject {
   if (!hasEntity) {
     throw new SpringExportValidationError(
       'no JPA entity file in the generated files',
+    );
+  }
+  if (!hasReadme) {
+    throw new SpringExportValidationError(
+      'no root README.md file in the generated files',
     );
   }
   return { projectName: PROJECT_NAME, files };

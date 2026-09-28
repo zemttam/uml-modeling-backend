@@ -39,7 +39,8 @@ Rules:
 - Multiplicities: "1", "0..1", "*", "1..*"; use "" when not stated. Use ""
   for "name", "fromMultiplicity", "toMultiplicity" when absent.
 - Direction: generalization -> from is the subclass, to is the superclass.
-  composition/aggregation -> from is the whole, to is the part.
+  composition/aggregation -> from is the part, to is the whole (the diamond
+  end).
   association -> from and to as described.
 - "diagramName": a short title derived from the content if none is given.
   "packageName": likewise, or "".
@@ -114,7 +115,7 @@ rel <kind> : <from> -> <to> [<fromMult> .. <toMult>]
 
 <kind> is association, generalization, composition, or aggregation.
 Generalization: <from> is the subclass. Composition/aggregation:
-<from> is the whole. Omit a multiplicity as empty: [ .. 1].
+<from> is the part, <to> is the whole. Omit a multiplicity as empty: [ .. 1].
 Transcribe names exactly as they appear. If the image shows something
 that is not a class diagram, output only: not a class diagram`;
 

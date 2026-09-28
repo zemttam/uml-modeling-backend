@@ -11,6 +11,6 @@ import { XmiImporter } from './xmi-importer';
   // AuthModule exports the configured JwtModule used for handshake auth.
   imports: [TypeOrmModule.forFeature([ProjectEntity]), AuthModule],
   providers: [DiagramGateway, XmiExporter, XmiImporter],
-  exports: [XmiExporter, XmiImporter],
+  exports: [XmiExporter, XmiImporter, DiagramGateway],
 })
 export class DiagramsModule {}
