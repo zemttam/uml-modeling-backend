@@ -4,6 +4,7 @@ import * as JSZip from 'jszip';
 import OpenAI from 'openai';
 import { scrubJsonResponse } from '../diagrams/diagram-from-ai';
 import { DiagramDocument } from '../diagrams/diagram.types';
+import { ensureJavaImports } from './java-imports';
 
 // Mirrors AiCreatorService's flag: llama.cpp's OpenAI-compat layer honors
 // `response_format: { type: "json_schema" }`. The layered strategy (scrub +
@@ -44,10 +45,13 @@ Architecture (Model-Service-Controller):
   and a @RestController exposing CRUD (create/read/read-all/update/delete)
   endpoints under a path derived from the entity name (e.g. /api/customers),
   using @PostMapping/@GetMapping/@PutMapping/@DeleteMapping.
-- Also produce: the Maven pom.xml with the pinned stack, a main application
+  - Also produce: the Maven pom.xml with the pinned stack, a main application
   class annotated @SpringBootApplication, and
   src/main/resources/application.properties.
-- Derive all names (classes, fields, methods, endpoints) from the diagram's
+  - Import hygiene: every generated ".java" file must compile standalone: it
+  must include an import for every type it references. Never rely on imports
+  that only exist in other generated files.
+  - Derive all names (classes, fields, methods, endpoints) from the diagram's
   names. Never invent classes, attributes, or operations not in the diagram.
 
 - Ignore the diagram's layout fields ("x", "y") and the elements' "id"
@@ -55,10 +59,12 @@ Architecture (Model-Service-Controller):
   code or file names.
 
 Attribute type mapping (case-insensitive match on the stored type string):
-- "int" -> Integer, "long" -> Long, "boolean" -> Boolean,
+- "int" -> Integer, "byte" -> Integer, "short" -> Integer, "long" -> Long,
+  "boolean" -> Boolean,
   "double" -> Double, "float" -> Double, "char" -> String,
   "String" -> String.
 - Date-like types ("Date", "LocalDate", "DateTime") -> LocalDate.
+- An attribute whose stored type is empty or missing -> String.
 - Any other stored type -> String.
 
 UML-to-JPA mapping rules:
@@ -101,10 +107,14 @@ Seeder (mandatory, exactly two project-level files):
   composition parts are created attached to valid wholes so cascade
   semantics hold; join entities reference valid seeded parents.
 - Use ThreadLocalRandom for all random values. Column-aware values:
-  fields whose name contains "name", "first", or "last" (case-insensitive,
-  e.g. firstName, lastName) get random realistic names from a small
-  built-in list; other String fields get random words from a small
-  built-in list; Integer/int and Long/long fields get random integers in
+  String fields generated from a diagram attribute of type "char" get a
+  single random lowercase letter a-z, regardless of the column name
+  (a "name" column of type char gets "K", not a person name). For
+  non-char String fields: fields whose name contains "name", "first",
+  or "last" (case-insensitive, e.g. firstName, lastName) get random
+  realistic names from a small built-in list; other non-char String
+  fields get random words from a small built-in list; Integer/int and
+  Long/long fields get random integers in
   1..100; Boolean/boolean fields get random true/false; LocalDate fields
   get random dates; Double/Float fields get random values in 1..100.
   Never set @Id fields; identifiers are left to auto-generation.
@@ -139,6 +149,32 @@ export class SpringExportValidationError extends Error {
     super(message);
     this.name = 'SpringExportValidationError';
   }
+}
+
+// Returns a deep copy of the diagram with attribute types and operation
+// return types that are empty, whitespace, or missing rewritten to "String",
+// so an untyped attribute (the app's "None") always reaches the LLM as a
+// String field. The stored diagram document is never modified.
+export function normalizeExportDiagram(
+  diagram: DiagramDocument,
+): DiagramDocument {
+  const copy = JSON.parse(JSON.stringify(diagram)) as DiagramDocument;
+  for (const element of copy.elements ?? []) {
+    for (const attribute of element.attributes ?? []) {
+      if (typeof attribute.type !== 'string' || attribute.type.trim() === '') {
+        attribute.type = 'String';
+      }
+    }
+    for (const operation of element.operations ?? []) {
+      if (
+        typeof operation.returnType !== 'string' ||
+        operation.returnType.trim() === ''
+      ) {
+        operation.returnType = 'String';
+      }
+    }
+  }
+  return copy;
 }
 
 function isUnsafePath(path: string): boolean {
@@ -241,7 +277,10 @@ export class SpringExportService {
     }
     let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: EXPORT_SYSTEM_PROMPT },
-      { role: 'user', content: JSON.stringify(diagram) },
+      {
+        role: 'user',
+        content: JSON.stringify(normalizeExportDiagram(diagram)),
+      },
     ];
     let reason: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -256,7 +295,8 @@ export class SpringExportService {
         const project = validateSpringProject(
           JSON.parse(scrubJsonResponse(content)),
         );
-        return await this.zipProject(project);
+        const files = ensureJavaImports(project.files);
+        return await this.zipProject({ ...project, files });
       } catch (error) {
         if (
           error instanceof SpringExportValidationError ||
