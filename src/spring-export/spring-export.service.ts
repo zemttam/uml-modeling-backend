@@ -4,7 +4,6 @@ import * as JSZip from 'jszip';
 import OpenAI from 'openai';
 import { scrubJsonResponse } from '../diagrams/diagram-from-ai';
 import { DiagramDocument } from '../diagrams/diagram.types';
-import { ensureJavaImports } from './java-imports';
 
 // Mirrors AiCreatorService's flag: llama.cpp's OpenAI-compat layer honors
 // `response_format: { type: "json_schema" }`. The layered strategy (scrub +
@@ -76,7 +75,10 @@ UML-to-JPA mapping rules:
   empty multiplicity is unspecified and you choose the most natural
   relation. Both ends single-valued -> @OneToOne; this end single and the
   other many -> @ManyToOne on the single side with the inverse @OneToMany
-  on the many side; both ends many-valued -> @ManyToMany.
+  on the many side; both ends many-valued -> @ManyToMany. With all that
+  being said, avoid circular references: in an association between two
+  classes, only one class is being referenced by the other. If uncertain,
+  apply @OneToMany.
 - Composition ("to" is the whole): a JPA relation with
   cascade = CascadeType.ALL and orphanRemoval = true from the whole (the
   "to" entity) to the part (the "from" entity).
@@ -149,32 +151,6 @@ export class SpringExportValidationError extends Error {
     super(message);
     this.name = 'SpringExportValidationError';
   }
-}
-
-// Returns a deep copy of the diagram with attribute types and operation
-// return types that are empty, whitespace, or missing rewritten to "String",
-// so an untyped attribute (the app's "None") always reaches the LLM as a
-// String field. The stored diagram document is never modified.
-export function normalizeExportDiagram(
-  diagram: DiagramDocument,
-): DiagramDocument {
-  const copy = JSON.parse(JSON.stringify(diagram)) as DiagramDocument;
-  for (const element of copy.elements ?? []) {
-    for (const attribute of element.attributes ?? []) {
-      if (typeof attribute.type !== 'string' || attribute.type.trim() === '') {
-        attribute.type = 'String';
-      }
-    }
-    for (const operation of element.operations ?? []) {
-      if (
-        typeof operation.returnType !== 'string' ||
-        operation.returnType.trim() === ''
-      ) {
-        operation.returnType = 'String';
-      }
-    }
-  }
-  return copy;
 }
 
 function isUnsafePath(path: string): boolean {
@@ -277,10 +253,7 @@ export class SpringExportService {
     }
     let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: EXPORT_SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: JSON.stringify(normalizeExportDiagram(diagram)),
-      },
+      { role: 'user', content: JSON.stringify(diagram) },
     ];
     let reason: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -295,8 +268,7 @@ export class SpringExportService {
         const project = validateSpringProject(
           JSON.parse(scrubJsonResponse(content)),
         );
-        const files = ensureJavaImports(project.files);
-        return await this.zipProject({ ...project, files });
+        return await this.zipProject(project);
       } catch (error) {
         if (
           error instanceof SpringExportValidationError ||
