@@ -52,6 +52,9 @@ Architecture (Model-Service-Controller):
   that only exist in other generated files.
   - Derive all names (classes, fields, methods, endpoints) from the diagram's
   names. Never invent classes, attributes, or operations not in the diagram.
+  - Check for consistency: classes, functions, methods have to be called correctly.
+  Check if a call you are performing is being written correctly. This app
+  has to compile from the get-go, so you have to be super-accurate.
 
 - Ignore the diagram's layout fields ("x", "y") and the elements' "id"
   fields: they are canvas metadata only and MUST NOT appear in the generated
@@ -131,7 +134,9 @@ plus spring.jpa.hibernate.ddl-auto=update and a JPA dialect for PostgreSQL.
 Also produce a root README.md listing every generated endpoint (HTTP
 method, path, name and type of accepted variables for POST/PUT, purpose) so the API can be tested from Postman, and
 explicitly include the seed endpoint "GET /api/seed" in that list with its
-method, path, and purpose (it truncates and re-seeds all tables).`;
+method, path, and purpose (it truncates and re-seeds all tables). In case
+you detect that the classes names along with its attributes were written in Spanish,
+the README.md must be in Spanish as well.`;
 
 export interface GeneratedFile {
   path: string;
